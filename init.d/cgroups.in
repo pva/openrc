@@ -74,8 +74,7 @@ cgroup2_base()
 	mkdir -p "${cgroup_path}"
 	mount -t cgroup2 cgroup2 -o "${cgroup_opts},nsdelegate" "${cgroup_path}" 2> /dev/null ||
 		mount -t cgroup2 cgroup2 -o "${cgroup_opts}" "${cgroup_path}"
-	mountinfo -q -f '^cgroup2$' "${cgroup_path}" &&
-		mkdir -p "${cgroup_path}/rc.init"
+	cgroup2_ensure_init_cgroup "${cgroup_path}" > /dev/null
 	return 0
 }
 
@@ -103,8 +102,7 @@ cgroup2_move_init_procs()
 	cgroup_path="$(cgroup2_find_path)"
 	[ -z "${cgroup_path}" ] && return 0
 	[ ! -e "${cgroup_path}/cgroup.procs" ] && return 0
-	init_cgroup="${cgroup_path}/rc.init"
-	[ ! -e "${init_cgroup}/cgroup.procs" ] && return 0
+	init_cgroup="$(cgroup2_ensure_init_cgroup "${cgroup_path}")" || return 0
 	pids=
 	while read -r pid; do
 		[ -n "${pid}" ] && pids="${pids} ${pid}"

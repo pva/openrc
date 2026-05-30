@@ -163,13 +163,27 @@ cgroup2_find_path()
 		return 0
 }
 
+cgroup2_ensure_init_cgroup()
+{
+	local cgroup_path init_cgroup
+	cgroup_path="$1"
+	[ -z "${cgroup_path}" ] && cgroup_path="$(cgroup2_find_path)"
+	[ -z "${cgroup_path}" ] && return 1
+	mountinfo -q -f '^cgroup2$' "${cgroup_path}" || return 1
+
+	init_cgroup="${cgroup_path}/rc.init"
+	mkdir -p "${init_cgroup}" || return 1
+	[ -e "${init_cgroup}/cgroup.procs" ] || return 1
+	printf "%s" "${init_cgroup}"
+	return 0
+}
+
 cgroup2_remove()
 {
 	local cgroup_path init_cgroup rc_cgroup_path
 	cgroup_path="$(cgroup2_find_path)"
 	[ -z "${cgroup_path}" ] && return 0
-	init_cgroup="${cgroup_path}/rc.init"
-	[ ! -e "${init_cgroup}/cgroup.procs" ] && return 0
+	init_cgroup="$(cgroup2_ensure_init_cgroup "${cgroup_path}")" || return 0
 	rc_cgroup_path="${cgroup_path}/openrc.${RC_SVCNAME}"
 	[ ! -d "${rc_cgroup_path}" ] ||
 		[ ! -e "${rc_cgroup_path}"/cgroup.events ] &&
@@ -190,11 +204,10 @@ cgroup2_remove()
 
 cgroup2_set_limits()
 {
-	local cgroup_path init_cgroup rc_cgroup_path key value
+	local cgroup_path rc_cgroup_path key value
 	cgroup_path="$(cgroup2_find_path)"
 	[ -z "${cgroup_path}" ] && return 0
-	init_cgroup="${cgroup_path}/rc.init"
-	[ ! -e "${init_cgroup}/cgroup.procs" ] && return 0
+	cgroup2_ensure_init_cgroup "${cgroup_path}" > /dev/null || return 0
 	rc_cgroup_path="${cgroup_path}/openrc.${RC_SVCNAME}"
 	[ ! -d "${rc_cgroup_path}" ] && mkdir "${rc_cgroup_path}"
 	[ -f "${rc_cgroup_path}"/cgroup.procs ] &&
