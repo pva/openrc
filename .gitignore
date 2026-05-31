@@ -14,4 +14,4 @@ build
 # IDE
 .idea
 
-gentoo-qemu/
+qemu-tests/

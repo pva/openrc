@@ -2,51 +2,53 @@
 #
 # Run the Gentoo OpenRC qcow2 image built by build-gentoo-qemu-image.sh.
 # Usage: run-gentoo-qemu-image.sh [OUTDIR]
+# IMAGE may point at a custom qcow2 image. The image directory is used for QGA
+# socket and shared-dir placement.
+# QEMU runs with -snapshot by default; set SNAPSHOT=0 to persist guest writes.
 
 set -euo pipefail
 
 prog="${0##*/}"
-outdir="${1:-gentoo-qemu}"
-image="${IMAGE:-${outdir}/gentoo-test.qcow2}"
-boot="${BOOT:-${outdir}/boot}"
-append="${APPEND:-root=/dev/vda1 rw console=ttyS0,115200n8 cgroup_no_v1=all loglevel=7}"
+outdir="${1:-qemu-tests}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=tools/qemu-helpers.sh
+. "${script_dir}/qemu-helpers.sh"
 
-die()
+host_share_readonly="${HOST_SHARE_READONLY:-1}"
+qemu_snapshot="${SNAPSHOT:-1}"
+qemu_memory="${MEM:-1024}"
+qemu_smp="${SMP:-2}"
+
+cleanup()
 {
-	echo "${prog}: $*" >&2
-	exit 1
+	rm -f -- "${qga_socket}"
 }
+trap cleanup EXIT
 
 [ -e "${image}" ] || die "image not found: ${image}"
-[ -d "${boot}" ] || die "boot directory not found: ${boot}"
 
-kernel="${KERNEL:-}"
-initrd="${INITRD:-}"
-
-if [ -z "${kernel}" ]; then
-	kernel="$(find "${boot}" -maxdepth 1 -type f -name 'vmlinuz-*' | sort -V | tail -n 1)"
+mkdir -p -- "${host_share}"
+host_share_opts="local,path=${host_share},mount_tag=hostshare,security_model=none"
+if [ "${host_share_readonly}" = 1 ]; then
+	host_share_opts="${host_share_opts},readonly=on"
 fi
 
-if [ -z "${initrd}" ]; then
-	initrd="$(find "${boot}" -maxdepth 1 -type f \( -name 'initramfs-*' -o -name 'initrd-*' \) | sort -V | tail -n 1)"
-fi
-
-[ -n "${kernel}" ] || die "kernel not found in ${boot}"
-[ -e "${kernel}" ] || die "kernel not found: ${kernel}"
-
+rm -f -- "${qga_socket}"
 qemu_args=(
 	-enable-kvm
-	-m "${MEM:-1024}"
-	-smp "${SMP:-2}"
+)
+if [ "${qemu_snapshot}" = 1 ]; then
+	qemu_args+=( -snapshot )
+fi
+qemu_args+=(
+	-m "${qemu_memory}"
+	-smp "${qemu_smp}"
 	-nographic
 	-drive "file=${image},if=virtio,format=qcow2"
-	-kernel "${kernel}"
+	-device virtio-serial-pci
+	-chardev "socket,path=${qga_socket},server=on,wait=off,id=qga0"
+	-device "virtserialport,chardev=qga0,name=org.qemu.guest_agent.0"
+	-virtfs "${host_share_opts}"
 )
 
-if [ -n "${initrd}" ]; then
-	qemu_args+=( -initrd "${initrd}" )
-fi
-
-qemu_args+=( -append "${append}" )
-
-exec qemu-system-x86_64 "${qemu_args[@]}"
+qemu-system-x86_64 "${qemu_args[@]}"
