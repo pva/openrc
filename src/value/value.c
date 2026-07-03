@@ -34,9 +34,6 @@ int main(int argc, char **argv)
 	if (service == NULL)
 		eerrorx("%s: no service specified", applet);
 
-	if (rc_yesno(getenv("RC_USER_SERVICES")))
-		rc_set_user();
-
 	if (strcmp(applet, "service_get_value") == 0 || strcmp(applet, "get_options") == 0)
 		action = GET;
 	else if (strcmp(applet, "service_set_value") == 0 || strcmp(applet, "save_options") == 0)

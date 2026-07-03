@@ -863,8 +863,6 @@ int main(int argc, char **argv)
 	svcname = getenv("RC_SVCNAME");
 	if (!svcname)
 		eerrorx("%s: The RC_SVCNAME environment variable is not set", applet);
-	if (rc_yesno(getenv("RC_USER_SERVICES")))
-		rc_set_user();
 	openlog(applet, LOG_PID, LOG_DAEMON);
 
 	if (argc <= 1 || strcmp(argv[1], svcname))

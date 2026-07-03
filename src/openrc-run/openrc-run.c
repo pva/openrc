@@ -1234,9 +1234,6 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	if (rc_yesno(getenv("RC_USER_SERVICES")))
-		rc_set_user();
-
 	if (!(service = (realpath(argv[1], NULL))))
 		eerrorx("readpath: %s", strerror(errno));
 	applet = basename_c(argv[1]);
