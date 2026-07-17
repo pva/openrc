@@ -244,7 +244,7 @@ yesno $RC_DEBUG && set -x
 # Parse RC_PATH in reverse order, so later conf.d files override earlier ones
 IFS=:
 for _f in $RC_PATH; do
-	_conf_d="$_f/conf.d $_conf_d"
+	_conf_d="$_f $_conf_d"
 done
 unset IFS
 
@@ -266,8 +266,8 @@ fi
 
 for _c in $_c; do
 	for _f in $_conf_d; do
-		if ! sourcex -e "$_f/$_c.$RC_RUNLEVEL"; then
-			sourcex -e "$_f/$_c"
+		if ! sourcex -e "$_f/conf.d/$_c.$RC_RUNLEVEL"; then
+			sourcex -e "$_f/conf.d/$_c"
 		fi
 	done
 done
