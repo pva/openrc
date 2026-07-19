@@ -43,7 +43,6 @@ set_environment(const char *service, char *vars[])
 	}
 
 	for (const char *var; (var = *vars); vars++) {
-		const char *var = *vars++;
 		size_t name_len = strcspn(var, "=");
 
 		TAILQ_FOREACH(reexport, reexports, entries) {
