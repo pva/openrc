@@ -1415,7 +1415,7 @@ ssize_t
 rc_service_getenv(const char *service, const char *name, char **buf)
 {
 	char var[strlen(service) + sizeof("/") + strlen(name)], *value;
-	int serrno, dfd = rc_dirfd(RC_DIR_ENVIRON);
+	int dfd = rc_dirfd(RC_DIR_ENVIRON);
 	struct stat stat;
 	size_t count;
 	FILE *fp;
