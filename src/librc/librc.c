@@ -707,7 +707,15 @@ static bool is_user = false;
 bool
 rc_is_user(void)
 {
-	return is_user;
+	int _is_user = -1;
+
+	if (_is_user == -1) {
+		char *env = getenv("RC_USER_SERVICES");
+
+		_is_user = env ? rc_yesno(env) : is_user;
+	}
+
+	return _is_user;
 }
 
 void
