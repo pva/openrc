@@ -3,8 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=tools/qemu/guest/tests/lib/common.sh
-. "${SCRIPT_DIR}/../lib/common.sh"
+# shellcheck source=tools/qemu/guest/tests/cgroups/common.sh
+. "${SCRIPT_DIR}/../cgroups/common.sh"
 
 setup_openrc_path
 rc-service cgroups status >/dev/null || fail "cgroups service is not started"

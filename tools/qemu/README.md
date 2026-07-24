@@ -22,8 +22,9 @@ tools/qemu/
     ├── setup/install-openrc.sh
     └── tests/
         ├── cgroup2/{boot,delegated,service}.sh
+        ├── cgroups/common.sh
         ├── lib/common.sh
-        └── upgrade/services.sh
+        └── upgrade/{cgroup-cleanup,services}.sh
 ```
 
 The runtime tree defaults to `qemu-tests`:
@@ -115,8 +116,10 @@ UPGRADE_FROM=0.55 tools/qemu/tests-run.sh qemu-tests .
 This workflow installs the old revision, reboots, records the started runlevel
 services, installs the current worktree, and checks that those services remain
 started both immediately after the live package upgrade and after the next
-reboot. If the tag text differs from the version printed by OpenRC, set
-`UPGRADE_EXPECTED_VERSION` as well.
+reboot. Before rebooting, it also stops a service started by the old OpenRC and
+checks that the new OpenRC removes the empty per-service cgroup without lazily
+creating `rc.init`. If the tag text differs from the version printed by OpenRC,
+set `UPGRADE_EXPECTED_VERSION` as well.
 
 Useful runner settings include `RUN_ID`, `QEMU_ACCEL=tcg`, `MEM`, `SMP`,
 `SSH_WAIT`, and a whitespace-separated `GUEST_TESTS` list. For example:

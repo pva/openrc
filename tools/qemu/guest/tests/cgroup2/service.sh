@@ -5,8 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=tools/qemu/guest/tests/lib/common.sh
-. "${SCRIPT_DIR}/../lib/common.sh"
+# shellcheck source=tools/qemu/guest/tests/cgroups/common.sh
+. "${SCRIPT_DIR}/../cgroups/common.sh"
 
 SVC="cgtest"
 INITD="/etc/init.d/${SVC}"
@@ -161,8 +161,7 @@ main()
 		if [ -s "${PIDFILE}" ] &&
 			read -r daemon_pid < "${PIDFILE}" &&
 			[ -n "${daemon_pid}" ] &&
-			[ -s "${CGROUP_PATH}/cgroup.procs" ] &&
-			grep -qx "${daemon_pid}" "${CGROUP_PATH}/cgroup.procs"; then
+			grep -qx "${daemon_pid}" "${CGROUP_PATH}/cgroup.procs" 2>/dev/null; then
 			break
 		fi
 		i=$((i + 1))

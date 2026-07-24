@@ -140,11 +140,15 @@ if [ -n "${UPGRADE_FROM}" ]; then
 		"${UPGRADE_FROM}" "${UPGRADE_EXPECTED_VERSION}" old
 	guest_reboot
 	run_guest_test upgrade/services.sh record
+	run_guest_test upgrade/cgroup-cleanup.sh prepare
 
 	guest_install_openrc /mnt/host/source/current \
 		"${CURRENT_VERSION}" "${CURRENT_VERSION}" current
 	# A package update must not disturb services which are already running.
 	run_guest_test upgrade/services.sh check live-upgrade
+	# A service started by old OpenRC must still clean up its cgroup when
+	# stopped by the new OpenRC before rc.init is created on reboot.
+	run_guest_test upgrade/cgroup-cleanup.sh check
 	guest_reboot
 	# The same runlevel services must also come back under the new OpenRC.
 	run_guest_test upgrade/services.sh check reboot

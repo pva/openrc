@@ -5,8 +5,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=tools/qemu/guest/tests/lib/common.sh
-. "${SCRIPT_DIR}/../lib/common.sh"
+# shellcheck source=tools/qemu/guest/tests/cgroups/common.sh
+. "${SCRIPT_DIR}/../cgroups/common.sh"
 
 DELEGATE_NAME="openrc-cgroup-ns-test"
 DELEGATE_PATH="/sys/fs/cgroup/${DELEGATE_NAME}"
@@ -35,10 +35,19 @@ cleanup_delegate()
 run_inner()
 {
 	local extra_stopped_commands=""
+	local mounts_after mounts_before
 
 	# A mount created after entering a cgroup namespace is rooted at the
 	# namespace root instead of exposing the host's complete hierarchy.
 	umount /sys/fs/cgroup
+	# Container runtimes such as Incus mount the delegated hierarchy before
+	# starting init. OpenRC must use that mount rather than covering it with
+	# another cgroup2 mount at the same path.
+	mount -t cgroup2 none -o nodev,noexec,nosuid /sys/fs/cgroup
+	mounts_before="$(awk '
+		$5 == "/sys/fs/cgroup" && $0 ~ / - cgroup2 / { count++ }
+		END { print count + 0 }
+	' /proc/self/mountinfo)"
 
 	# shellcheck source=sh/rc-cgroup.sh
 	. "${RC_LIBEXECDIR}/sh/rc-cgroup.sh"
@@ -47,10 +56,16 @@ run_inner()
 
 	cgroups_unified
 
+	mounts_after="$(awk '
+		$5 == "/sys/fs/cgroup" && $0 ~ / - cgroup2 / { count++ }
+		END { print count + 0 }
+	' /proc/self/mountinfo)"
+	[ "${mounts_after}" = "${mounts_before}" ] ||
+		fail "OpenRC covered the existing cgroup2 mount (${mounts_before} before, ${mounts_after} after)"
 	mountinfo -q -f '^cgroup2$' /sys/fs/cgroup || fail "delegated cgroup2 mount is missing"
 	[ -e /sys/fs/cgroup/rc.init/cgroup.procs ] || fail "delegated rc.init was not created"
 	grep -qx "$$" /sys/fs/cgroup/rc.init/cgroup.procs || fail "test process was not moved to delegated rc.init"
-	[ ! -s /sys/fs/cgroup/cgroup.procs ] || fail "delegated cgroup root still contains processes"
+	assert_cgroup_empty /sys/fs/cgroup/cgroup.procs "delegated cgroup root"
 	assert_controllers_enabled "the delegated root"
 
 	echo "delegated cgroup namespace root initialized successfully"
@@ -79,6 +94,6 @@ mkdir "${DELEGATE_PATH}"
 )
 
 [ -e "${DELEGATE_PATH}/rc.init/cgroup.procs" ] || fail "delegated rc.init is not visible from the host hierarchy"
-[ ! -s "${DELEGATE_PATH}/rc.init/cgroup.procs" ] || fail "delegated rc.init still contains processes"
+assert_cgroup_empty "${DELEGATE_PATH}/rc.init/cgroup.procs" "delegated rc.init after namespace exit"
 
 echo "delegated cgroup v2 test passed"
