@@ -14,6 +14,42 @@
 
 static bool init_halt = false;
 
+static int open_fifo(const char *path, int *dummy_writer)
+{
+	int flags;
+	int reader;
+	int saved_errno;
+
+	*dummy_writer = -1;
+	reader = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+	if (reader == -1)
+		return -1;
+
+	/*
+	 * Keep a dummy writer open so that the reader does not see EOF while
+	 * no clients are connected. Open the reader nonblocking so that open()
+	 * does not wait for an initial client. Once the dummy writer is in
+	 * place, make reads blocking so that the daemon sleeps until data arrives.
+	 */
+	*dummy_writer = open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+	if (*dummy_writer == -1)
+		goto fail;
+
+	flags = fcntl(reader, F_GETFL);
+	if (flags == -1 || fcntl(reader, F_SETFL, flags & ~O_NONBLOCK) == -1)
+		goto fail;
+
+	return reader;
+
+fail:
+	saved_errno = errno;
+	if (*dummy_writer != -1)
+		close(*dummy_writer);
+	close(reader);
+	errno = saved_errno;
+	return -1;
+}
+
 static void sysvinit_runlevel(int runlevel)
 {
 	const char *cmd;
@@ -70,7 +106,7 @@ static void sysvinit_setenv(char *data, size_t size)
 }
 
 int main(void) {
-	int fifo;
+	int fifo, fifo_dummy_writer;
 
 	openlog("sysv-initctl", 0, LOG_DAEMON);
 	if (mkfifo("/run/initctl", 0600) == -1 && errno != EEXIST) {
@@ -78,7 +114,7 @@ int main(void) {
 		return 1;
 	}
 	symlink("/run/initctl", "/dev/initctl");
-	if ((fifo = open("/run/initctl", O_RDONLY | O_NONBLOCK)) == -1) {
+	if ((fifo = open_fifo("/run/initctl", &fifo_dummy_writer)) == -1) {
 		syslog(LOG_ERR, "open: %s", strerror(errno));
 		return 1;
 	}
