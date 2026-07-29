@@ -12,7 +12,9 @@ guest_start()
 guest_reboot()
 {
 	log "rebooting guest"
-	ssh_exec "sync; reboot" >/dev/null 2>&1 || true
+	# This works while switching PID 1 in either direction: openrc-shutdown
+	# talks to openrc-init directly or falls back to sysvinit's initctl.
+	ssh_exec "sync; openrc-shutdown --reboot now" >/dev/null 2>&1 || true
 	ssh_wait_unready
 	ssh_wait_ready
 }
@@ -29,12 +31,13 @@ guest_shutdown()
 guest_install_openrc()
 {
 	local repository="$1" revision="$2" expected="$3" label="$4"
+	local use_flags="${5:-}"
 	local command log_file status
 
 	command="$(shell_join bash /mnt/host/tests/setup/install-openrc.sh \
-		"${repository}" "${revision}" "${expected}" "${label}")"
+		"${repository}" "${revision}" "${expected}" "${label}" "${use_flags}")"
 	log_file="${G_RESULTS_DIR}/install-${label}.log"
-	log "installing OpenRC ${revision} in the guest"
+	log "installing OpenRC ${revision} in the guest; additional USE flags: ${use_flags:-none}"
 	set +e
 	ssh_exec "${command}" 2>&1 | tee "${log_file}"
 	status=${PIPESTATUS[0]}

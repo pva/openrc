@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install an OpenRC revision from a repository mounted under /mnt/host.
-# Usage: install-openrc.sh REPOSITORY REVISION EXPECTED_VERSION [LABEL]
+# Usage: install-openrc.sh REPOSITORY REVISION EXPECTED_VERSION [LABEL] [USE_FLAGS]
 
 set -euo pipefail
 
@@ -8,6 +8,7 @@ REPOSITORY="${1:?missing repository path}"
 REVISION="${2:?missing revision}"
 EXPECTED_VERSION="${3:?missing expected version}"
 LABEL="${4:-openrc}"
+USE_FLAGS="${5:-}"
 case "${LABEL}" in
 	*[!A-Za-z0-9._-]*) echo "invalid install label: ${LABEL}" >&2; exit 2 ;;
 esac
@@ -64,10 +65,12 @@ chown -R portage:portage "${GIT_STORE}"
 chmod 755 "${TEMP_DIR}"
 
 echo "installing OpenRC ${REVISION} from ${REPOSITORY}"
+echo "additional USE flags: ${USE_FLAGS:-none}"
 if ! EGIT3_STORE_DIR="${GIT_STORE}" \
 	EVCS_OFFLINE=1 \
 	EGIT_OVERRIDE_COMMIT_OPENRC_OPENRC="${REVISION}" \
 	ACCEPT_KEYWORDS='**' \
+	USE="${USE_FLAGS}" \
 	emerge --ask=n --oneshot --verbose --buildpkg=y \
 		--usepkg-exclude sys-apps/openrc --autounmask=n \
 		=sys-apps/openrc-9999 > "${EMERGE_LOG}" 2>&1; then

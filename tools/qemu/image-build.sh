@@ -13,12 +13,37 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=tools/qemu/lib/qemu.sh
 . "${SCRIPT_DIR}/lib/qemu.sh"
 
+usage()
+{
+	cat <<-EOF
+		Usage: ${PROG} [QEMU_TEST_ROOT]
+
+		Build a reusable Gentoo base image. QEMU_TEST_ROOT defaults to qemu-tests.
+
+		Environment:
+		  IMAGE             output qcow2 path (default: ROOT/images/gentoo-base.qcow2)
+		  IMAGE_SIZE        virtual image size (default: 8G)
+		  GENTOO_MIRROR     stage3 download mirror
+		  KERNEL_PACKAGE    kernel package atom (default: sys-kernel/gentoo-kernel-bin)
+		  KERNEL_CMDLINE    complete kernel command line
+	EOF
+}
+
+case "${1:-}" in
+	-h|--help)
+		usage
+		exit 0
+		;;
+esac
+[ "$#" -le 1 ] || { usage >&2; exit 2; }
+
 need_cmd awk
 need_cmd curl
 need_cmd guestfish
 need_cmd qemu-img
 need_cmd realpath
 need_cmd script
+need_cmd sha256sum
 need_cmd ssh-keygen
 need_cmd tar
 need_cmd virt-copy-out
@@ -111,6 +136,7 @@ OVERLAY="${BUILD_DIR}/overlay"
 OVERLAY_TAR="${BUILD_DIR}/overlay.tar"
 mkdir -p \
 	"${OVERLAY}/etc" \
+	"${OVERLAY}/etc/grub.d" \
 	"${OVERLAY}/etc/init.d" \
 	"${OVERLAY}/etc/runlevels/default" \
 	"${OVERLAY}/etc/runlevels/sysinit" \
@@ -144,9 +170,8 @@ write_configs "${OVERLAY}" <<-EOF
 	FILE: etc/default/grub
 	GRUB_TIMEOUT=0
 	GRUB_TIMEOUT_STYLE=hidden
-	GRUB_CMDLINE_LINUX="${KERNEL_CMDLINE}"
-	GRUB_TERMINAL="serial console"
-	GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1"
+	GRUB_TERMINAL="serial"
+	GRUB_SERIAL_COMMAND="serial --speed=115200 --unit=0 --word=8 --parity=no --stop=1; terminfo -g 160x24 serial dumb"
 
 	FILE: etc/hostname
 	openrc-qemu
@@ -177,33 +202,33 @@ write_configs "${OVERLAY}" <<-EOF
 	Subsystem sftp internal-sftp
 	
 	FILE: etc/portage/package.use/openrc-qemu
-	sys-kernel/installkernel dracut
+	# OpenRC provides /sbin/init and SysV-compatible shutdown commands.
+	sys-apps/openrc debug sysv-utils -sysvinit
+	# To switch back to sys-apps/sysvinit, replace the line above with:
+	# sys-apps/openrc debug -sysv-utils sysvinit
+	sys-kernel/installkernel dracut grub
 	dev-vcs/git -perl
+
+	FILE: etc/portage/env/openrc-qemu-debug
+	CFLAGS="\${CFLAGS} -Og -g3 -fno-omit-frame-pointer -fsanitize=address,undefined"
+	LDFLAGS="\${LDFLAGS} -fsanitize=address,undefined"
+	FEATURES="\${FEATURES} nostrip"
+
+	FILE: etc/portage/package.env/openrc-qemu
+	sys-apps/openrc openrc-qemu-debug
 	
-	FILE: etc/local.d/cgroup-check.start
-	#!/bin/sh
-	{
-		echo "=== cgroup check ==="
-		echo "root cgroup.procs:"
-		cat /sys/fs/cgroup/cgroup.procs 2>/dev/null
-		echo "root cgroup.subtree_control:"
-		cat /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null
-		echo "rc.init cgroup.procs:"
-		cat /sys/fs/cgroup/rc.init/cgroup.procs 2>/dev/null
-		echo "cgroup tree:"
-		find /sys/fs/cgroup -maxdepth 2 -type d | sort
-		echo "=== end cgroup check ==="
-	} >/dev/console 2>&1
 	EOF
 
 cp -- "${CLIENT_KEY}.pub" "${OVERLAY}/root/.ssh/authorized_keys"
 cp -- "${GUEST_HOST_KEY}" "${OVERLAY}/etc/ssh/ssh_host_ed25519_key"
 cp -- "${GUEST_HOST_KEY}.pub" "${OVERLAY}/etc/ssh/ssh_host_ed25519_key.pub"
+cp -- "${SCRIPT_DIR}/guest/setup/grub-direct.sh" \
+	"${OVERLAY}/etc/grub.d/09_openrc_qemu"
 chmod 700 "${OVERLAY}/root/.ssh"
 chmod 600 "${OVERLAY}/root/.ssh/authorized_keys" \
 	"${OVERLAY}/etc/ssh/ssh_host_ed25519_key"
 chmod 644 "${OVERLAY}/etc/ssh/ssh_host_ed25519_key.pub"
-chmod 755 "${OVERLAY}/etc/local.d/cgroup-check.start"
+chmod 755 "${OVERLAY}/etc/grub.d/09_openrc_qemu"
 
 ln -s agetty "${OVERLAY}/etc/init.d/agetty.ttyS0"
 ln -s net.lo "${OVERLAY}/etc/init.d/net.eth0"
@@ -221,7 +246,7 @@ guestfish --progress-bars --rw -a "${WORKING_IMAGE}" <<-EOF
 	umount-all
 	EOF
 
-log "installing kernel, bootloader, SSH, and OpenRC build dependencies"
+log "installing OpenRC init, kernel, GRUB, SSH, Vim, dhcpcd, and build dependencies"
 BOOT_MARKER=openrc-qemu-boot-installed
 RESCUE_CMD="virt-rescue --rw --network -a \"\$BASE_IMAGE\" -m \"${IMAGE_ROOT}:/\""
 BASE_IMAGE="${WORKING_IMAGE}" script -q -e -E never -c "${RESCUE_CMD}" /dev/null <<-EOF
@@ -233,17 +258,23 @@ BASE_IMAGE="${WORKING_IMAGE}" script -q -e -E never -c "${RESCUE_CMD}" /dev/null
 	chroot /sysroot /bin/bash -lc '
 	set -e
 	mkdir -p /etc/portage
-	printf "\nGRUB_PLATFORMS=\"pc\"\n" >> /etc/portage/make.conf
+	printf "\nGRUB_PLATFORMS=\"pc\"\nMAKEOPTS=\"-j8\"\n" >> /etc/portage/make.conf
 	getuto
 	emerge-webrsync || emerge --sync
-	emerge --oneshot --getbinpkg ${KERNEL_PACKAGE} sys-boot/grub net-misc/openssh dev-vcs/git
-	ACCEPT_KEYWORDS="**" emerge --oneshot --onlydeps =sys-apps/openrc-9999
+	emerge --jobs=3 --oneshot --getbinpkg --usepkg-exclude sys-apps/openrc \
+		sys-apps/openrc ${KERNEL_PACKAGE} sys-boot/grub \
+		net-misc/openssh net-misc/dhcpcd dev-vcs/git app-editors/vim \
+		dev-debug/gdb dev-debug/valgrind dev-debug/strace
+	ACCEPT_KEYWORDS="**" emerge --jobs=3 --oneshot --onlydeps \
+		=sys-apps/openrc-9999
 	eselect news read >/dev/null 2>&1 || true
 	rc-update del dhcpcd default >/dev/null 2>&1 || true
 	rc-update add sshd default
 	rc-update add net.eth0 default
 	grub-install --target=i386-pc --recheck ${IMAGE_DISK}
 	grub-mkconfig -o /boot/grub/grub.cfg
+	rm -f /etc/resolv.conf
+	printf "nameserver 10.0.2.3\noptions timeout:1 attempts:2\n" > /etc/resolv.conf
 	'
 	touch /sysroot/var/tmp/${BOOT_MARKER}
 	sync
@@ -254,5 +285,6 @@ virt-copy-out -a "${WORKING_IMAGE}" -m "${IMAGE_ROOT}:/" \
 	"/var/tmp/${BOOT_MARKER}" "${BUILD_DIR}" >/dev/null 2>&1 ||
 	die "boot installation failed"
 mv -- "${WORKING_IMAGE}" "${G_BASE_IMAGE}"
+sha256sum -- "${G_BASE_IMAGE}" > "${G_BASE_IMAGE}.sha256"
 log "base image created: ${G_BASE_IMAGE}"
 printf '%s\n' "${G_BASE_IMAGE}"

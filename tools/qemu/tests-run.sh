@@ -37,7 +37,8 @@ CURRENT_REPO=
 CURRENT_VERSION=
 HISTORY_REPO=
 
-[ -d "${SOURCE_DIR}/.git" ] || die "source directory is not a Git checkout: ${SOURCE_DIR}"
+[ "$(git -C "${SOURCE_DIR}" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] ||
+	die "source directory is not a Git checkout: ${SOURCE_DIR}"
 [ -f "${SOURCE_DIR}/meson.build" ] || die "source directory has no meson.build: ${SOURCE_DIR}"
 
 project_version()

@@ -112,9 +112,12 @@ qemu_overlay_create()
 {
 	[ -f "${G_BASE_IMAGE}" ] ||
 		die "base image not found: ${G_BASE_IMAGE}; run tools/qemu/image-build.sh first"
+	[ -f "${G_BASE_IMAGE}.sha256" ] ||
+		die "base image checksum not found: ${G_BASE_IMAGE}.sha256"
 	[ ! -e "${G_OVERLAY_IMAGE}" ] || die "overlay already exists: ${G_OVERLAY_IMAGE}"
 	log "creating disposable overlay ${G_OVERLAY_IMAGE}"
 	qemu-img create -f qcow2 -F qcow2 -b "${G_BASE_IMAGE}" "${G_OVERLAY_IMAGE}"
+	cp -- "${G_BASE_IMAGE}.sha256" "${G_RUN_DIR}/base-image.sha256"
 }
 
 qemu_pid()
@@ -171,11 +174,15 @@ qemu_check_socket_path()
 qemu_prepare_args()
 {
 	local serial_mode="${1:-file}"
+	local net_restrict
 	local share_opts
 
+	cmp -s -- "${G_BASE_IMAGE}.sha256" "${G_RUN_DIR}/base-image.sha256" ||
+		die "base image changed since this run was created; use a new RUN_ID"
 	MEM="${MEM:-1024}"
 	SMP="${SMP:-2}"
 	QEMU_ACCEL="${QEMU_ACCEL:-kvm}"
+	NET="${NET:-ISOLATED}"
 	case "${QEMU_ACCEL}" in
 		kvm)
 			[ -e /dev/kvm ] || die "/dev/kvm is unavailable; set QEMU_ACCEL=tcg"
@@ -183,12 +190,24 @@ qemu_prepare_args()
 		tcg) ;;
 		*) die "unsupported QEMU_ACCEL: ${QEMU_ACCEL}" ;;
 	esac
+	case "${NET^^}" in
+		ISOLATED|NONE|OFF)
+			NET=ISOLATED
+			net_restrict=on
+			;;
+		NAT)
+			NET=NAT
+			net_restrict=off
+			;;
+		*) die "unsupported NET mode: ${NET}; use ISOLATED or NAT" ;;
+	esac
 	case "${serial_mode}" in
 		file|stdio) ;;
 		*) die "unsupported serial mode: ${serial_mode}" ;;
 	esac
 
 	qemu_check_socket_path
+	log "network mode: ${NET}"
 	share_opts="local,path=${G_SHARE_DIR},mount_tag=hostshare,security_model=none,readonly=on"
 	G_QEMU_ARGS=(
 		-accel "${QEMU_ACCEL}"
@@ -196,7 +215,7 @@ qemu_prepare_args()
 		-smp "${SMP}"
 		-pidfile "${G_QEMU_PIDFILE}"
 		-drive "file=${G_OVERLAY_IMAGE},if=virtio,format=qcow2"
-		-netdev "user,id=testnet,restrict=on,hostfwd=unix:${G_SSH_SOCKET}-:22"
+		-netdev "user,id=testnet,restrict=${net_restrict},hostfwd=unix:${G_SSH_SOCKET}-:22"
 		-device "virtio-net-pci,netdev=testnet"
 		-virtfs "${share_opts}"
 	)

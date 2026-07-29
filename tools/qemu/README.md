@@ -10,6 +10,7 @@ and a private shared directory under one run directory.
 tools/qemu/
 ├── image-build.sh
 ├── image-run.sh
+├── image-update-openrc.sh
 ├── tests-run.sh
 ├── tests-run-guest.sh
 ├── lib/
@@ -19,7 +20,9 @@ tools/qemu/
 │   ├── qemu.sh
 │   └── ssh.sh
 └── guest/
-    ├── setup/install-openrc.sh
+    ├── setup/
+    │   ├── grub-direct.sh
+    │   └── install-openrc.sh
     └── tests/
         ├── cgroup2/{boot,delegated,service}.sh
         ├── cgroups/common.sh
@@ -33,9 +36,11 @@ The runtime tree defaults to `qemu-tests`:
 qemu-tests/
 ├── images/
 │   ├── gentoo-base.qcow2
+│   ├── gentoo-base.qcow2.sha256
 │   └── ssh/
 └── runs/
     └── 20260721T120000Z-1234/
+        ├── base-image.sha256
         ├── overlay.qcow2
         ├── share/
         │   ├── source/
@@ -48,42 +53,44 @@ qemu-tests/
 Run directories and overlays are deliberately preserved after success and
 failure so that logs and the final guest state can be inspected together. They
 can be removed manually when no longer needed. `qemu-tests/` is ignored by Git.
+Each run keeps a copy of the base image checksum; rebuilding the image requires
+a new `RUN_ID`.
 While a VM is running, its SSH forwarding socket has a short, deterministic
 name such as `/tmp/openrc_qemu_0123456789abcdef01234567.socket`. The runner
 prints the exact path and removes the socket when QEMU exits.
 
 ## Build the image
 
-From the repository root:
-
 ```sh
 tools/qemu/image-build.sh qemu-tests
 ```
 
-The host needs QEMU, libguestfs, `curl`, OpenSSH, and `socat`; the scripts check
-individual commands before using them.
+Building needs network access plus QEMU, libguestfs, `curl`, OpenSSH, and
+`socat`. The image contains OpenRC as PID 1, a binary kernel, GRUB, OpenSSH,
+`dhcpcd`, Vim, Git, GDB, Valgrind, strace, and the dependencies of
+`sys-apps/openrc-9999`. Test-only SSH keys are stored under
+`qemu-tests/images/ssh`.
 
-The builder downloads a Gentoo OpenRC stage3, installs a binary kernel, GRUB,
-OpenSSH, and the build dependencies of `sys-apps/openrc-9999`. Building the
-image therefore needs network access. The generated client and guest host keys
-are kept in `qemu-tests/images/ssh`; they are test-only credentials.
-
-The guest has a static `eth0` address, `10.0.2.15/24`, with gateway
-`10.0.2.2`. Runtime networking uses QEMU slirp with `restrict=on`, so the guest
-cannot initiate external network connections. SSH is forwarded directly from
-a per-run Unix socket to guest TCP port 22:
+OpenRC is built with `debug sysv-utils -sysvinit`, ASan/UBSan, debug symbols,
+and frame pointers. The alternative `sys-apps/sysvinit` setting is commented in
+`/etc/portage/package.use/openrc-qemu`; swap the lines and rebuild OpenRC to
+change PID 1:
 
 ```text
--netdev user,id=testnet,restrict=on,hostfwd=unix:/tmp/openrc_qemu_ID.socket-:22
--device virtio-net-pci,netdev=testnet
+sys-apps/openrc debug sysv-utils -sysvinit
+# sys-apps/openrc debug -sysv-utils sysvinit
 ```
 
-The dash-free path works around a host-forwarding parser bug in QEMU through
-10.2. It is derived from the absolute run directory, so helper processes can
-reconstruct it without storing additional runtime state.
+The guest uses static address `10.0.2.15/24`, gateway `10.0.2.2`, and DNS
+`10.0.2.3`. Outbound traffic is blocked by default; enable it when needed:
 
-No QEMU guest agent is installed. SSH supplies command exit status, readiness,
-reboot, and shutdown handling, so a second control channel is unnecessary.
+```sh
+NET=NAT tools/qemu/image-run.sh qemu-tests
+```
+
+`NET=OFF` and `NET=NONE` alias the default `NET=ISOLATED`. SSH remains
+available through a per-run Unix socket in every mode. `dhcpcd` is installed
+but disabled in favor of the static `net.eth0` service; no guest agent is used.
 
 ## Shell variable convention
 
@@ -93,42 +100,33 @@ declared explicitly at the beginning of that library. For example,
 Globals owned by an executable script use ordinary upper-case names such as
 `SOURCE_DIR` and `CURRENT_VERSION`. Lower-case names are reserved for variables
 declared `local` inside functions. Public environment settings keep their
-existing names, including `QEMU_ACCEL`, `MEM`, and `UPGRADE_FROM`.
+existing names, including `NET`, `QEMU_ACCEL`, `MEM`, and `UPGRADE_FROM`.
 
 ## Run tests
-
-Install the current worktree into a fresh overlay and run all guest tests:
 
 ```sh
 tools/qemu/tests-run.sh qemu-tests .
 ```
 
-The current tracked and untracked, non-ignored files are copied into a small
-temporary Git repository in that run's read-only share. Portage builds
-`openrc-9999` from that snapshot, the guest reboots, and the cgroup2 tests run.
-
-To test an upgrade from an older tag or revision:
+This snapshots the tracked and unignored worktree files, installs
+`openrc-9999`, reboots, and runs the cgroup2 tests. To test an upgrade:
 
 ```sh
 UPGRADE_FROM=0.55 tools/qemu/tests-run.sh qemu-tests .
 ```
 
-This workflow installs the old revision, reboots, records the started runlevel
-services, installs the current worktree, and checks that those services remain
-started both immediately after the live package upgrade and after the next
-reboot. Before rebooting, it also stops a service started by the old OpenRC and
-checks that the new OpenRC removes the empty per-service cgroup without lazily
-creating `rc.init`. If the tag text differs from the version printed by OpenRC,
-set `UPGRADE_EXPECTED_VERSION` as well.
+The upgrade workflow checks service state and cgroup cleanup before and after
+reboot. Use `UPGRADE_EXPECTED_VERSION` when the revision name differs from the
+reported version.
 
 Useful runner settings include `RUN_ID`, `QEMU_ACCEL=tcg`, `MEM`, `SMP`,
-`SSH_WAIT`, and a whitespace-separated `GUEST_TESTS` list. For example:
+`SSH_WAIT`, and the whitespace-separated `GUEST_TESTS` list:
 
 ```sh
 GUEST_TESTS=cgroup2/boot.sh tools/qemu/tests-run.sh
 ```
 
-To rerun one already staged test while its guest is still running:
+Rerun one staged test in a running guest with:
 
 ```sh
 tools/qemu/tests-run-guest.sh \
@@ -142,9 +140,62 @@ tools/qemu/image-run.sh qemu-tests
 ```
 
 This creates the same isolated run layout and attaches the serial console to
-the terminal. Set `SERIAL_MODE=file` to put it in `serial.log` instead. The
-image intentionally allows root autologin on its serial test console; do not
-use it as a general-purpose or exposed VM.
+the terminal with root autologin. `SERIAL_MODE=file` redirects it to
+`serial.log`. Without `RUN_ID` a new overlay is created; the printed resume
+command reuses it with all guest changes:
+
+```sh
+RUN_ID=20260721T120000Z-1234 tools/qemu/image-run.sh qemu-tests
+```
+
+Network mode is selected on every boot. For example, rebuild a packaged OpenRC
+release with outbound access:
+
+```sh
+# Host:
+NET=NAT RUN_ID=20260721T120000Z-1234 tools/qemu/image-run.sh qemu-tests
+
+# Guest:
+USE='sysv-utils -sysvinit debug' \
+    emerge --ask=n --oneshot =sys-apps/openrc-0.63.1
+```
+
+After `poweroff`, resume without `NET=NAT`; the package and downloaded files
+remain in the overlay.
+
+## Install a specific OpenRC commit
+
+Install and reboot-test an exact commit without modifying the base image:
+
+```sh
+OPENRC_USE='sysv-utils -sysvinit debug' \
+tools/qemu/image-update-openrc.sh qemu-tests . 0123456789abcdef
+```
+
+The helper creates a run, installs from the local Git checkout, reboots,
+verifies PID 1, and powers off. Use `RUN_ID` to update an existing overlay:
+
+```sh
+RUN_ID=20260721T120000Z-1234 \
+OPENRC_USE='sysv-utils -sysvinit debug' \
+tools/qemu/image-update-openrc.sh qemu-tests . 89abcdef01234567
+```
+
+`OPENRC_REVISION` can replace the positional commit. `OPENRC_USE` overrides
+`package.use`, including negative flags such as `-sysv-utils sysvinit`;
+`OPENRC_EXPECTED_VERSION` overrides the version check. NAT is the default for
+this helper, or use `NET=ISOLATED` with cached dependencies.
+
+Open the saved guest with:
+
+```sh
+RUN_ID=20260721T120000Z-1234 tools/qemu/image-run.sh qemu-tests
+```
+
+Guest edits survive `poweroff` and later runs. Install and verification logs
+are stored under the run's `results/` directory.
+
+## Manual SSH
 
 For manual SSH, use the socket and key printed by `image-run.sh`, for example:
 
@@ -153,29 +204,4 @@ ssh -o 'ProxyCommand=socat - UNIX-CONNECT:/tmp/openrc_qemu_ID.socket' \
     -o HostKeyAlias=openrc-qemu \
     -o UserKnownHostsFile=qemu-tests/images/ssh/known_hosts \
     -i qemu-tests/images/ssh/id_ed25519 root@openrc-qemu
-```
-======================
-
-Как проверить:
-
-```sh
-tools/qemu/image-build.sh qemu-tests
-```
-
-Обычный тест текущего дерева:
-
-```sh
-tools/qemu/tests-run.sh qemu-tests .
-```
-
-Upgrade с тега:
-
-```sh
-UPGRADE_FROM=0.55 tools/qemu/tests-run.sh qemu-tests .
-```
-
-Ручной запуск образа:
-
-```sh
-tools/qemu/image-run.sh qemu-tests
 ```
