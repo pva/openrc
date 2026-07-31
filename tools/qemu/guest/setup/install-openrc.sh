@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install an OpenRC revision from a repository mounted under /mnt/host.
-# Usage: install-openrc.sh REPOSITORY REVISION EXPECTED_VERSION [LABEL] [USE_FLAGS]
+# Usage: install-openrc.sh REPOSITORY REVISION EXPECTED_VERSION [LABEL] [USE_FLAGS] [ASAN] [VERIFY]
 
 set -euo pipefail
 
@@ -9,8 +9,18 @@ REVISION="${2:?missing revision}"
 EXPECTED_VERSION="${3:?missing expected version}"
 LABEL="${4:-openrc}"
 USE_FLAGS="${5:-}"
+ASAN="${6:-0}"
+VERIFY="${7:-1}"
 case "${LABEL}" in
 	*[!A-Za-z0-9._-]*) echo "invalid install label: ${LABEL}" >&2; exit 2 ;;
+esac
+case "${ASAN}" in
+	0|1) ;;
+	*) echo "ASAN must be 0 or 1, got: ${ASAN}" >&2; exit 2 ;;
+esac
+case "${VERIFY}" in
+	0|1) ;;
+	*) echo "VERIFY must be 0 or 1, got: ${VERIFY}" >&2; exit 2 ;;
 esac
 
 [ "$(id -u)" -eq 0 ] || { echo "install-openrc.sh must run as root" >&2; exit 1; }
@@ -66,6 +76,15 @@ chmod 755 "${TEMP_DIR}"
 
 echo "installing OpenRC ${REVISION} from ${REPOSITORY}"
 echo "additional USE flags: ${USE_FLAGS:-none}"
+if [ "${ASAN}" = 1 ]; then
+	echo "ASan/UBSan: enabled"
+	CFLAGS="$(portageq envvar CFLAGS) -fsanitize=address,undefined"
+	LDFLAGS="$(portageq envvar LDFLAGS) -fsanitize=address,undefined"
+	FEATURES="$(portageq envvar FEATURES) -sandbox -usersandbox"
+	export CFLAGS LDFLAGS FEATURES
+else
+	echo "ASan/UBSan: disabled"
+fi
 if ! EGIT3_STORE_DIR="${GIT_STORE}" \
 	EVCS_OFFLINE=1 \
 	EGIT_OVERRIDE_COMMIT_OPENRC_OPENRC="${REVISION}" \
@@ -79,8 +98,10 @@ if ! EGIT3_STORE_DIR="${GIT_STORE}" \
 fi
 
 sync
-openrc --version
-openrc --version | grep -F -- "${EXPECTED_VERSION}" >/dev/null || {
-	echo "installed OpenRC version does not contain: ${EXPECTED_VERSION}" >&2
-	exit 1
-}
+if [ "${VERIFY}" = 1 ]; then
+	openrc --version
+	openrc --version | grep -F -- "${EXPECTED_VERSION}" >/dev/null || {
+		echo "installed OpenRC version does not contain: ${EXPECTED_VERSION}" >&2
+		exit 1
+	}
+fi

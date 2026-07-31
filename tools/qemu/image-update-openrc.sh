@@ -25,6 +25,9 @@ usage()
 		  RUN_ID                    create or update this persistent run
 		  OPENRC_REVISION           revision when the third argument is omitted
 		  OPENRC_USE                additional per-build USE settings
+		  OPENRC_ASAN               build with ASan/UBSan: 0 (default) or 1
+		  OPENRC_SHELL              open an SSH shell after install; skip
+		                            version/reboot verification: 0 (default) or 1
 		  OPENRC_EXPECTED_VERSION   text expected in openrc --version
 		  NET                       NAT by default; ISOLATED when dependencies are cached
 	EOF
@@ -52,6 +55,9 @@ qemu_root_init "${1:-qemu-tests}"
 SOURCE_DIR="$(realpath_m "${2:-${REPO_ROOT}}")"
 REVISION="${3:-${OPENRC_REVISION:-HEAD}}"
 OPENRC_USE="${OPENRC_USE:-}"
+OPENRC_ASAN="${OPENRC_ASAN:-0}"
+OPENRC_SHELL="${OPENRC_SHELL:-0}"
+INSTALL_VERIFY=1
 RUN_ID="${RUN_ID:-$(run_id_default)}"
 QEMU_EXIT_WAIT="${QEMU_EXIT_WAIT:-60}"
 NET="${NET:-NAT}"
@@ -60,6 +66,17 @@ NET="${NET:-NAT}"
 	die "source directory is not a Git checkout: ${SOURCE_DIR}"
 [ -f "${SOURCE_DIR}/meson.build" ] || die "source directory has no meson.build: ${SOURCE_DIR}"
 validate_name run-id "${RUN_ID}"
+validate_boolean OPENRC_ASAN "${OPENRC_ASAN}"
+validate_boolean OPENRC_SHELL "${OPENRC_SHELL}"
+
+if [ "${OPENRC_ASAN}" = 1 ]; then
+	# pam_openrc.so is loaded by uninstrumented programs such as login and
+	# sshd. Loading its ASan runtime after libc makes those programs abort.
+	OPENRC_USE="${OPENRC_USE:+${OPENRC_USE} }-pam"
+fi
+if [ "${OPENRC_SHELL}" = 1 ]; then
+	INSTALL_VERIFY=0
+fi
 
 COMMIT="$(git -C "${SOURCE_DIR}" rev-parse --verify "${REVISION}^{commit}")" ||
 	die "OpenRC revision does not exist: ${REVISION}"
@@ -134,9 +151,22 @@ log "run directory: ${G_RUN_DIR}"
 log "revision: ${COMMIT}"
 log "expected version: ${OPENRC_EXPECTED_VERSION}"
 log "additional USE flags: ${OPENRC_USE:-none}"
+log "ASan/UBSan: $([ "${OPENRC_ASAN}" = 1 ] && printf enabled || printf disabled)"
 guest_start
 guest_install_openrc "${GUEST_REPO}" "${COMMIT}" \
-	"${OPENRC_EXPECTED_VERSION}" "${INSTALL_LABEL}" "${OPENRC_USE}"
+	"${OPENRC_EXPECTED_VERSION}" "${INSTALL_LABEL}" "${OPENRC_USE}" \
+	"${OPENRC_ASAN}" "${INSTALL_VERIFY}"
+
+if [ "${OPENRC_SHELL}" = 1 ]; then
+	log "OpenRC installed; skipping reboot verification"
+	log "opening an interactive SSH shell; exit it to power off QEMU"
+	ssh_shell
+	guest_shutdown "${QEMU_EXIT_WAIT}" ||
+		die "guest did not shut down cleanly; see ${G_QEMU_LOG}"
+	log "OpenRC ${COMMIT} installed; reboot verification was skipped"
+	exit 0
+fi
+
 guest_reboot
 
 VERIFY_LOG="${G_RESULTS_DIR}/verify-${INSTALL_LABEL}.log"

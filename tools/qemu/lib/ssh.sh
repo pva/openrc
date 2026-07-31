@@ -43,6 +43,11 @@ ssh_exec()
 	ssh "${G_SSH_ARGS[@]}" root@openrc-qemu "${remote_command}"
 }
 
+ssh_shell()
+{
+	ssh -t "${G_SSH_ARGS[@]}" root@openrc-qemu
+}
+
 ssh_wait_ready()
 {
 	local i

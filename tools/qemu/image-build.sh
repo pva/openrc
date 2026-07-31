@@ -22,7 +22,8 @@ usage()
 
 		Environment:
 		  IMAGE             output qcow2 path (default: ROOT/images/gentoo-base.qcow2)
-		  IMAGE_SIZE        virtual image size (default: 8G)
+		  IMAGE_SIZE        virtual image size (default: 10G)
+		  IMAGE_BUILD_MEM   virt-rescue memory in MiB (default: 2560)
 		  GENTOO_MIRROR     stage3 download mirror
 		  KERNEL_PACKAGE    kernel package atom (default: sys-kernel/gentoo-kernel-bin)
 		  KERNEL_CMDLINE    complete kernel command line
@@ -48,13 +49,15 @@ need_cmd ssh-keygen
 need_cmd tar
 need_cmd virt-copy-out
 need_cmd virt-rescue
+need_cmd virt-sparsify
 need_cmd xz
 
 qemu_root_init "${1:-qemu-tests}"
 
 GENTOO_MIRROR="${GENTOO_MIRROR:-https://distfiles.gentoo.org}"
 STAGE3_DIR="releases/amd64/autobuilds/current-stage3-amd64-openrc"
-IMAGE_SIZE="${IMAGE_SIZE:-8G}"
+IMAGE_SIZE="${IMAGE_SIZE:-10G}"
+IMAGE_BUILD_MEM="${IMAGE_BUILD_MEM:-2560}"
 IMAGE_DISK=/dev/sda
 IMAGE_ROOT="${IMAGE_DISK}1"
 ROOT_LABEL=openrc-root
@@ -117,6 +120,7 @@ log "decompressing stage3"
 xz -dc "${STAGE3_XZ}" > "${STAGE3_TAR}"
 
 WORKING_IMAGE="${BUILD_DIR}/gentoo-base.qcow2"
+SPARSIFIED_IMAGE="${BUILD_DIR}/gentoo-base.sparsified.qcow2"
 log "creating ${WORKING_IMAGE}"
 qemu-img create -f qcow2 "${WORKING_IMAGE}" "${IMAGE_SIZE}"
 log "partitioning, formatting, and extracting stage3"
@@ -152,7 +156,6 @@ tar_extract optional "${STAGE3_TAR}" /etc/securetty "${OVERLAY}/etc/securetty"
 write_configs "${OVERLAY}" <<-EOF
 	APPEND: etc/rc.conf
 
-	rc_cgroup_mode="unified"
 	rc_logger="YES"
 	rc_verbose=yes
 
@@ -181,9 +184,6 @@ write_configs "${OVERLAY}" <<-EOF
 	term_type="vt100"
 	agetty_options="--autologin root --noclear"
 
-	FILE: etc/conf.d/cgroups
-	rc_cgroup_mode="unified"
-
 	FILE: etc/conf.d/net
 	config_eth0="10.0.2.15/24"
 	routes_eth0="default via 10.0.2.2"
@@ -200,7 +200,21 @@ write_configs "${OVERLAY}" <<-EOF
 	FILE: etc/ssh/sshd_config
 	Include /etc/ssh/sshd_config.d/*.conf
 	Subsystem sftp internal-sftp
-	
+
+	FILE: etc/profile.d/resize-tty.sh
+	# Query the terminal before interactive Bash starts using its dimensions.
+	if [ -n "\${BASH_VERSION-}" ] && [ -t 0 ] && [ -t 2 ]; then
+		case \$- in
+			*i*) eval "\$(busybox resize)" ;;
+		esac
+	fi
+
+	FILE: etc/portage/package.use/incus
+	dev-util/xdelta lzma
+	net-firewall/nftables json
+	sys-fs/squashfs-tools lzma
+	sys-libs/libcap static-libs
+
 	FILE: etc/portage/package.use/openrc-qemu
 	# OpenRC provides /sbin/init and SysV-compatible shutdown commands.
 	sys-apps/openrc debug sysv-utils -sysvinit
@@ -210,13 +224,11 @@ write_configs "${OVERLAY}" <<-EOF
 	dev-vcs/git -perl
 
 	FILE: etc/portage/env/openrc-qemu-debug
-	CFLAGS="\${CFLAGS} -Og -g3 -fno-omit-frame-pointer -fsanitize=address,undefined"
-	LDFLAGS="\${LDFLAGS} -fsanitize=address,undefined"
+	CFLAGS="\${CFLAGS} -Og -g3 -fno-omit-frame-pointer"
 	FEATURES="\${FEATURES} nostrip"
 
 	FILE: etc/portage/package.env/openrc-qemu
 	sys-apps/openrc openrc-qemu-debug
-	
 	EOF
 
 cp -- "${CLIENT_KEY}.pub" "${OVERLAY}/root/.ssh/authorized_keys"
@@ -246,9 +258,9 @@ guestfish --progress-bars --rw -a "${WORKING_IMAGE}" <<-EOF
 	umount-all
 	EOF
 
-log "installing OpenRC init, kernel, GRUB, SSH, Vim, dhcpcd, and build dependencies"
+log "installing OpenRC init, kernel, GRUB, SSH, Vim, BusyBox, dhcpcd, and build dependencies"
 BOOT_MARKER=openrc-qemu-boot-installed
-RESCUE_CMD="virt-rescue --rw --network -a \"\$BASE_IMAGE\" -m \"${IMAGE_ROOT}:/\""
+RESCUE_CMD="virt-rescue --rw --network --memsize \"${IMAGE_BUILD_MEM}\" -a \"\$BASE_IMAGE\" -m \"${IMAGE_ROOT}:/\""
 BASE_IMAGE="${WORKING_IMAGE}" script -q -e -E never -c "${RESCUE_CMD}" /dev/null <<-EOF
 	set -e
 	mount -t proc proc /sysroot/proc
@@ -258,13 +270,14 @@ BASE_IMAGE="${WORKING_IMAGE}" script -q -e -E never -c "${RESCUE_CMD}" /dev/null
 	chroot /sysroot /bin/bash -lc '
 	set -e
 	mkdir -p /etc/portage
-	printf "\nGRUB_PLATFORMS=\"pc\"\nMAKEOPTS=\"-j8\"\n" >> /etc/portage/make.conf
+	printf "\nGRUB_PLATFORMS=\"pc\"\nMAKEOPTS=\"-j8\"\nGOFLAGS=\"-p=2\"\n" >> /etc/portage/make.conf
 	getuto
 	emerge-webrsync || emerge --sync
 	emerge --jobs=3 --oneshot --getbinpkg --usepkg-exclude sys-apps/openrc \
-		sys-apps/openrc ${KERNEL_PACKAGE} sys-boot/grub \
+		sys-apps/openrc sys-apps/busybox ${KERNEL_PACKAGE} sys-boot/grub \
 		net-misc/openssh net-misc/dhcpcd dev-vcs/git app-editors/vim \
-		dev-debug/gdb dev-debug/valgrind dev-debug/strace
+		dev-debug/gdb dev-debug/valgrind dev-debug/strace app-containers/incus
+	busybox --list | grep -Fx resize >/dev/null
 	ACCEPT_KEYWORDS="**" emerge --jobs=3 --oneshot --onlydeps \
 		=sys-apps/openrc-9999
 	eselect news read >/dev/null 2>&1 || true
@@ -284,7 +297,10 @@ BASE_IMAGE="${WORKING_IMAGE}" script -q -e -E never -c "${RESCUE_CMD}" /dev/null
 virt-copy-out -a "${WORKING_IMAGE}" -m "${IMAGE_ROOT}:/" \
 	"/var/tmp/${BOOT_MARKER}" "${BUILD_DIR}" >/dev/null 2>&1 ||
 	die "boot installation failed"
-mv -- "${WORKING_IMAGE}" "${G_BASE_IMAGE}"
+log "sparsifying and compressing the base image"
+TMPDIR="${BUILD_DIR}" virt-sparsify --check-tmpdir=continue --compress \
+	"${WORKING_IMAGE}" "${SPARSIFIED_IMAGE}"
+mv -- "${SPARSIFIED_IMAGE}" "${G_BASE_IMAGE}"
 sha256sum -- "${G_BASE_IMAGE}" > "${G_BASE_IMAGE}.sha256"
 log "base image created: ${G_BASE_IMAGE}"
 printf '%s\n' "${G_BASE_IMAGE}"

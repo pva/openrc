@@ -31,13 +31,14 @@ guest_shutdown()
 guest_install_openrc()
 {
 	local repository="$1" revision="$2" expected="$3" label="$4"
-	local use_flags="${5:-}"
+	local use_flags="${5:-}" asan="${6:-0}" verify="${7:-1}"
 	local command log_file status
 
 	command="$(shell_join bash /mnt/host/tests/setup/install-openrc.sh \
-		"${repository}" "${revision}" "${expected}" "${label}" "${use_flags}")"
+		"${repository}" "${revision}" "${expected}" "${label}" "${use_flags}" \
+		"${asan}" "${verify}")"
 	log_file="${G_RESULTS_DIR}/install-${label}.log"
-	log "installing OpenRC ${revision} in the guest; additional USE flags: ${use_flags:-none}"
+	log "installing OpenRC ${revision} in the guest; additional USE flags: ${use_flags:-none}; ASan/UBSan: ${asan}; verify: ${verify}"
 	set +e
 	ssh_exec "${command}" 2>&1 | tee "${log_file}"
 	status=${PIPESTATUS[0]}

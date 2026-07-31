@@ -65,14 +65,17 @@ prints the exact path and removes the socket when QEMU exits.
 tools/qemu/image-build.sh qemu-tests
 ```
 
-Building needs network access plus QEMU, libguestfs, `curl`, OpenSSH, and
-`socat`. The image contains OpenRC as PID 1, a binary kernel, GRUB, OpenSSH,
-`dhcpcd`, Vim, Git, GDB, Valgrind, strace, and the dependencies of
+Building needs network access plus QEMU, libguestfs,
+`app-emulation/guestfs-tools[ocaml]`, `curl`, OpenSSH, and `socat`. The
+completed qcow2 image is sparsified and compressed before it is published. The
+image contains OpenRC as PID 1, a binary kernel, GRUB, OpenSSH, `dhcpcd`,
+BusyBox, Vim, Git, GDB, Valgrind, strace, and the dependencies of
 `sys-apps/openrc-9999`. Test-only SSH keys are stored under
 `qemu-tests/images/ssh`.
 
-OpenRC is built with `debug sysv-utils -sysvinit`, ASan/UBSan, debug symbols,
-and frame pointers. The alternative `sys-apps/sysvinit` setting is commented in
+OpenRC in the base image is built without sanitizers, with
+`debug sysv-utils -sysvinit`, debug symbols, and frame pointers. The alternative
+`sys-apps/sysvinit` setting is commented in
 `/etc/portage/package.use/openrc-qemu`; swap the lines and rebuild OpenRC to
 change PID 1:
 
@@ -169,6 +172,7 @@ Install and reboot-test an exact commit without modifying the base image:
 
 ```sh
 OPENRC_USE='sysv-utils -sysvinit debug' \
+OPENRC_ASAN=1 \
 tools/qemu/image-update-openrc.sh qemu-tests . 0123456789abcdef
 ```
 
@@ -178,13 +182,30 @@ verifies PID 1, and powers off. Use `RUN_ID` to update an existing overlay:
 ```sh
 RUN_ID=20260721T120000Z-1234 \
 OPENRC_USE='sysv-utils -sysvinit debug' \
+OPENRC_ASAN=0 \
 tools/qemu/image-update-openrc.sh qemu-tests . 89abcdef01234567
 ```
 
 `OPENRC_REVISION` can replace the positional commit. `OPENRC_USE` overrides
 `package.use`, including negative flags such as `-sysv-utils sysvinit`;
+`OPENRC_ASAN=1` enables ASan/UBSan for that update only, defaults to `0`, and
+forces `-pam` because an ASan-instrumented `pam_openrc.so` cannot be loaded
+safely by the uninstrumented login programs in the image;
 `OPENRC_EXPECTED_VERSION` overrides the version check. NAT is the default for
 this helper, or use `NET=ISOLATED` with cached dependencies.
+
+To enter the running guest immediately after installation, without running the
+version check, rebooting, or running the post-reboot checks, use:
+
+```sh
+OPENRC_ASAN=1 \
+OPENRC_SHELL=1 \
+tools/qemu/image-update-openrc.sh qemu-tests . 0123456789abcdef
+```
+
+This opens an interactive root shell over SSH in the same QEMU boot. The serial
+console continues to be written to the run's `serial.log`. Exiting the shell
+powers off QEMU and preserves the run overlay.
 
 Open the saved guest with:
 
